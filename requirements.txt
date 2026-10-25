@@ -1,0 +1,7 @@
+PySide6>=6.10
+
+# Build-time only: tools/woff2_to_ttf.py converts the upstream Bootstrap Icons
+# WOFF2 into media/bootstrap-icons.ttf. The TTF is committed, so the app itself
+# only needs PySide6.
+fonttools>=4.50
+brotli>=1.1

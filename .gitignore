@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+.venv*/
+.DS_Store
+
+# Generated development media / MPD runtime state
+media/music/
+media/playlists/
+media/mpd/
