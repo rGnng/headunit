@@ -600,7 +600,7 @@ class ProgressBar(QWidget):
         painter.drawRoundedRect(self.rect(), 5, 5)
         if self._value > 0:
             width = max(10, int(self.width() * self._value))
-            painter.setBrush(Palette.Highlight)
+            painter.setBrush(Palette.Progress)
             painter.drawRoundedRect(QRect(0, 0, width, self.height()), 5, 5)
 
 

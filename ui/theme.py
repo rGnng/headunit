@@ -17,6 +17,7 @@ class Palette:
     Accent = QColor("#e8a33d")
     AccentText = QColor("#101418")
     Highlight = QColor("#4f7a9c")
+    Progress = QColor("#8a8a8a")
     Danger = QColor("#d66a5e")
 
 
