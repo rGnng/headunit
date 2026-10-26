@@ -362,10 +362,10 @@ class MainWindow(QMainWindow):
 
         # Volume knob: left turn '-', right turn '=', press 'x'.
         if key == Qt.Key.Key_Minus:
-            self.backend.adjustVolume(-self.backend.volumeStep())
+            self.backend.adjustVolume(-1)
             return
         if key in (Qt.Key.Key_Equal, Qt.Key.Key_Plus):
-            self.backend.adjustVolume(self.backend.volumeStep())
+            self.backend.adjustVolume(1)
             return
         if key == Qt.Key.Key_X:
             self.backend.toggleMute()

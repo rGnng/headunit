@@ -10,7 +10,7 @@ import random
 
 from PySide6.QtCore import QTimer
 
-from .base import STARRED_PLAYLIST, Album, PlayerBackend, RepeatMode, Track
+from .base import STARRED_PLAYLIST, Album, Output, PlayerBackend, RepeatMode, Track
 
 # (artist, album, year, genre, [(title, duration), ...])
 _LIBRARY = [
@@ -101,8 +101,9 @@ _LIBRARY = [
 class MockPlayerBackend(PlayerBackend):
     """In-memory backend with a simulated clock and sample library."""
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, volumeSteps: int = 16) -> None:
         super().__init__(parent)
+        self._volumeSteps = 64 if int(volumeSteps) == 64 else 16
         self._albums: list[Album] = []
         self._tracksByAlbum: dict[tuple[str, str], list[Track]] = {}
         self._allTracks: list[Track] = []
@@ -112,6 +113,7 @@ class MockPlayerBackend(PlayerBackend):
         self._index = -1
         self._playing = False
         self._position = 0
+        self._outputId = 0
         self._playlists: dict[str, list[Track]] = {STARRED_PLAYLIST: []}
 
         self._clock = QTimer(self)
@@ -156,6 +158,18 @@ class MockPlayerBackend(PlayerBackend):
 
     def latencyMs(self) -> float | None:
         return None
+
+    def outputs(self) -> list[Output]:
+        return [
+            Output(0, "Speakers", self._outputId == 0),
+            Output(1, "Headphones", self._outputId == 1),
+        ]
+
+    def selectOutput(self, outputId: int) -> bool:
+        if outputId not in (0, 1):
+            return False
+        self._outputId = outputId
+        return True
 
     def isPlaying(self) -> bool:
         return self._playing

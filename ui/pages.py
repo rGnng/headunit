@@ -13,7 +13,6 @@ from players.base import (
     STARRED_PLAYLIST,
     Album,
     PlayerBackend,
-    RepeatMode,
     Track,
     formatDuration,
 )
@@ -1471,8 +1470,9 @@ class PlaylistsPage(ListPage):
 class SettingsPage(Page):
     """Application settings plus live MPD server information."""
 
-    SERVER_ROW = 5
-    CACHE_ROW = 3
+    SERVER_ROW = 4
+    CACHE_ROW = 1
+    OUTPUT_ROW = 3
     REFRESH_MS = 300
     CACHE_REFRESH_MS = 2000
 
@@ -1606,19 +1606,42 @@ class SettingsPage(Page):
     def _backgroundLabel(self) -> str:
         return "Blurred Cover" if self._backgroundMode() == "blurred" else "Black"
 
+    def _outputLabel(self) -> str:
+        outputs = self.backend.outputs()
+        enabled = [output.name for output in outputs if output.enabled]
+        if not outputs:
+            return "None"
+        if not enabled:
+            return "Off"
+        if len(enabled) == 1:
+            return enabled[0]
+        return "Multiple"
+
+    def _openOutputMenu(self) -> None:
+        outputs = self.backend.outputs()
+        if not outputs:
+            return
+        enabled = [index for index, output in enumerate(outputs) if output.enabled]
+        current = enabled[0] if enabled else 0
+
+        def pick(index: int) -> None:
+            if 0 <= index < len(outputs):
+                self.backend.selectOutput(outputs[index].id)
+            self._refreshItems(keepSelection=True)
+
+        self.openOptionMenu(
+            "Audio Output",
+            [output.name for output in outputs],
+            current,
+            pick,
+        )
+
     def _refreshItems(self, keepSelection: bool = False) -> None:
-        shuffle = "On" if self.backend.shuffle() else "Off"
-        repeat = {
-            RepeatMode.Off: "Off",
-            RepeatMode.All: "All",
-            RepeatMode.One: "One",
-        }[self.backend.repeatMode()]
         items = [
-            ("Shuffle", shuffle),
-            ("Repeat", repeat),
             ("Background", self._backgroundLabel()),
             ("Rebuild Cache", self._cacheSizeLabel),
             ("Reload", "Memory"),
+            ("Output", self._outputLabel()),
             ("MPD Server", self._serverText()),
         ]
         self._list.setItems(items, keepSelection=keepSelection)
@@ -1629,13 +1652,7 @@ class SettingsPage(Page):
             self._refreshItems(keepSelection=True)
             return
         label = items[index][0]
-        if label == "Shuffle":
-            self.backend.setShuffle(not self.backend.shuffle())
-        elif label == "Repeat":
-            modes = [RepeatMode.Off, RepeatMode.All, RepeatMode.One]
-            current = modes.index(self.backend.repeatMode())
-            self.backend.setRepeatMode(modes[(current + 1) % len(modes)])
-        elif label == "Background":
+        if label == "Background":
             mode = "black" if self._backgroundMode() == "blurred" else "blurred"
             if self.state is not None:
                 self.state.set("settings.background", mode)
@@ -1654,6 +1671,8 @@ class SettingsPage(Page):
             window = self.window()
             if window is not None and hasattr(window, "reloadCaches"):
                 window.reloadCaches()
+        elif label == "Output":
+            self._openOutputMenu()
         elif label == "MPD Server":
             window = self.window()
             if window is not None and hasattr(window, "reconnectBackend"):

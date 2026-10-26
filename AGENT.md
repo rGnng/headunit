@@ -81,6 +81,19 @@ Off = `repeat 0`; All = `repeat 1, single 0`; One = `repeat 1, single 1`.
 Commands never update local flags optimistically, so a failed command and a
 server restart stay consistent.
 
+### Volume and mute
+Volume is pushed with `setvol 0..100`. The level is also read from the
+`volume` field on every status poll, so the interface starts with the server's
+value and follows changes made by other clients. Volume moves in 16 or 64 steps
+(configured by `volume_steps`, i.e. 6.25% or 1.5625% per notch); a value that
+is not on that grid (for example 37) is snapped to the nearest step before it
+is displayed or adjusted. MPD has no mute command,
+so mute is implemented as `setvol 0` while keeping the previous level locally;
+unmuting sends that level again, and polls do not overwrite the saved level
+while muted. Adjusting the volume while muted unmutes and sends the new level.
+The status bar renders a full-scale level as `Hi` to keep its volume field two
+characters wide; the volume overlay still shows `100`.
+
 ### Cover art
 - Fetched on a separate connection: `readpicture` first, then `albumart` (folder
   art) when the file has no embedded picture.
@@ -161,13 +174,15 @@ Shows cover, title, artist - album and progress. Cover retries as described
 above; no star indicator is shown here (the status bar has it).
 
 ### Settings
-Rows: `Shuffle`, `Repeat`, `Background`, `Rebuild Cache`, `Reload`,
-`MPD Server`. The server row has two lines, `address · state` and the current
-ping, refreshed every 300 ms while visible; selecting it reconnects.
+Rows: `Background`, `Rebuild Cache`, `Reload`, `Output`, `MPD Server`.
+The server row has two lines, `address · state` and the current ping, refreshed
+every 300 ms while visible; selecting it reconnects.
 `Rebuild Cache` deletes artwork caches (memory and disk) and starts a caching
 pass immediately; its value shows the current on-disk cache size, refreshed
 every 2 s while visible. `Reload` drops the in-memory library/artwork caches and
-rebuilds the visible views without restarting.
+rebuilds the visible views without restarting. `Output` shows the enabled MPD
+audio output and opens a context menu listing every output; picking one keeps
+exactly one enabled (`Multiple`/`Off` when the server state is unusual).
 
 ### Idle cover caching
 After 10 s without input the client prefetches missing album covers. A top-right
@@ -178,16 +193,9 @@ starts a fresh pass. A cover that keeps timing out is skipped after 10 s so the
 rest of the pass can proceed.
 
 ### Overlays
-
-All status gadgets share one layout: a dim icon and bold title on the left, a
-dim value on the right and, where applicable, a rounded progress bar below.
-- Volume: bottom centre above the status bar. Shows `Volume` / `nn%`, the
-  volume-up icon, and a bar; muted replaces icon/value with the red mute icon
-  and `Muted`.
-- Connection lost: compact centred gadget. Shows the red plug icon,
-  `Disconnected` and `Retry n · Ping …`; no progress bar.
-- Caching: top-right disc gadget. Shows `Caching`, `processed/total` and a
-  progress bar.
+- Volume: bottom centre above the status bar.
+- Connection lost: centred box with a grey `plug` icon, retry attempt and ping.
+- Caching: top-right disc/progress gadget.
 
 ## Configuration and State
 Config file (`%APPDATA%/headunit/config.json` on Windows, otherwise
@@ -195,6 +203,7 @@ Config file (`%APPDATA%/headunit/config.json` on Windows, otherwise
 ```json
 {
   "debug": true,
+  "volume_steps": 16,
   "mpd": {
     "host": "127.0.0.1",
     "port": 6600,
@@ -204,9 +213,10 @@ Config file (`%APPDATA%/headunit/config.json` on Windows, otherwise
 }
 ```
 `mpd.timeout` is the **control** socket timeout in milliseconds. Bulk library
-loads and artwork use their own longer timeouts. Missing keys are filled from
-the defaults; obsolete backend keys (`backend`, `itunes`, `paired_itunes`) are
-dropped on load.
+loads and artwork use their own longer timeouts. `volume_steps` is `16`
+(6.25% per notch) or `64` (1.5625% per notch); any other value falls back to
+16. Missing keys are filled from the defaults; obsolete backend keys
+(`backend`, `itunes`, `paired_itunes`) are dropped on load.
 
 UI state (`%APPDATA%/headunit/state.json`) stores the active section, sort modes
 (`albums.sort`, `songs.sort`), browser cursor keys, queue cursor and

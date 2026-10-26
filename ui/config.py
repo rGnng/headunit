@@ -67,6 +67,8 @@ class AppConfig:
     def _defaults(self) -> dict[str, Any]:
         return {
             "debug": True,
+            # Volume notches across the full scale: 16 (6.25%) or 64 (1.5625%).
+            "volume_steps": 16,
             "mpd": {
                 "host": "127.0.0.1",
                 "port": 6600,
@@ -109,3 +111,11 @@ class AppConfig:
 
     def debugEnabled(self) -> bool:
         return bool(self.get("debug", True))
+
+    def volumeSteps(self) -> int:
+        """Volume notches across the full scale: 16 or 64 (default 16)."""
+        try:
+            steps = int(self.get("volume_steps", 16))
+        except (TypeError, ValueError):
+            return 16
+        return 64 if steps == 64 else 16

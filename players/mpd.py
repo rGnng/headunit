@@ -27,6 +27,7 @@ from debuglog import getLogger
 from .base import (
     STARRED_PLAYLIST,
     Album,
+    Output,
     PlayerBackend,
     RepeatMode,
     Track,
@@ -99,8 +100,10 @@ class MpdPlayerBackend(PlayerBackend):
         password: str = "",
         timeout: float = 2.0,
         parent: QObject | None = None,
+        volumeSteps: int = 16,
     ) -> None:
         super().__init__(parent)
+        self._volumeSteps = 64 if int(volumeSteps) == 64 else 16
         self._host = host
         self._port = int(port)
         self._password = password or None
@@ -175,7 +178,6 @@ class MpdPlayerBackend(PlayerBackend):
         self._poll.timeout.connect(self._tick)
         self._poll.start()
 
-        self.setVolume(40)
         self._tick()
 
     # ------------------------------------------------------------------ #
@@ -212,7 +214,9 @@ class MpdPlayerBackend(PlayerBackend):
     # Volume; MPD stores 0..100, matching the interface.
     # ------------------------------------------------------------------ #
     def _applyVolume(self) -> None:
-        self._send(f"setvol {self._volume}")
+        # MPD has no mute command; muting is volume 0, unmuting restores the
+        # last level. setVolume() clears _muted before calling this.
+        self._send(f"setvol {0 if self._muted else self._volume}")
 
     # ------------------------------------------------------------------ #
     # Playback options
@@ -1076,6 +1080,62 @@ class MpdPlayerBackend(PlayerBackend):
         """Connection attempts made since the last successful connect."""
         return self._retryAttempts
 
+    def outputs(self) -> list[Output]:
+        """Audio outputs reported by MPD, in server order."""
+        if not self._connected:
+            self._beginReconnect()
+            return []
+        try:
+            rows = self._client.command("outputs")
+        except (MpdError, OSError) as exc:
+            _log.warning("outputs failed: %s", exc)
+            if not _isCommandError(exc):
+                self._markDisconnected()
+            return []
+
+        outputs: list[Output] = []
+        currentId: int | None = None
+        currentName = ""
+        currentEnabled = False
+
+        def flush() -> None:
+            nonlocal currentId, currentName, currentEnabled
+            if currentId is not None:
+                outputs.append(Output(currentId, currentName, currentEnabled))
+            currentId = None
+            currentName = ""
+            currentEnabled = False
+
+        for row in rows:
+            key, _, value = row.partition(":")
+            value = value.strip()
+            if key == "outputid":
+                flush()
+                try:
+                    currentId = int(value)
+                except ValueError:
+                    currentId = None
+            elif key == "outputname":
+                currentName = value
+            elif key == "outputenabled":
+                currentEnabled = value == "1"
+        flush()
+        return outputs
+
+    def selectOutput(self, outputId: int) -> bool:
+        """Enable one output and disable every other output."""
+        outputs = self.outputs()
+        if not any(output.id == outputId for output in outputs):
+            return False
+        commands = [
+            f"{'enable' if output.id == outputId else 'disable'}output {output.id}"
+            for output in outputs
+            if (output.id == outputId) != output.enabled
+        ]
+        if not commands:
+            return True
+        return self._batchCommands(commands)
+
     def _startHostPing(self) -> None:
         if self._pingThread is not None and self._pingThread.is_alive():
             return
@@ -1222,6 +1282,25 @@ class MpdPlayerBackend(PlayerBackend):
         if self._connected:
             self.connectionRestored.emit()
 
+    def _syncVolume(self, fields: dict[str, str]) -> None:
+        """Adopt the server volume; muted state keeps the saved level."""
+        if self._muted:
+            return
+        raw = fields.get("volume")
+        if raw is None:
+            return
+        try:
+            level = int(raw)
+        except ValueError:
+            return
+        if not 0 <= level <= 100:
+            return
+        snapped = self._snapVolume(level)
+        if snapped == self._volume:
+            return
+        self._volume = snapped
+        self.volumeChanged.emit(snapped, False)
+
     def _syncPlaybackOptions(self, fields: dict[str, str]) -> bool:
         """Adopt random/repeat/single from MPD's status as the source of truth."""
         shuffleOn = fields.get("random", "0") == "1"
@@ -1295,6 +1374,7 @@ class MpdPlayerBackend(PlayerBackend):
             _log.debug("status poll ok: %.0f ms (tick %d)", elapsedMs, self._ticks)
 
         fields = self._parseFields(status)
+        self._syncVolume(fields)
         optionsChanged = self._syncPlaybackOptions(fields)
         state = fields.get("state", "stop")
         self._state = state

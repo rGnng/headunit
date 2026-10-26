@@ -51,6 +51,15 @@ class Album:
     track_count: int = 0
 
 
+@dataclass(frozen=True)
+class Output:
+    """One audio output reported by the backend."""
+
+    id: int
+    name: str
+    enabled: bool
+
+
 def formatDuration(seconds: int) -> str:
     """Format a duration as m:ss."""
     seconds = max(0, int(seconds))
@@ -72,11 +81,13 @@ class PlayerBackend(QObject, ABC, metaclass=_BackendMeta):
     starredChanged = Signal(bool)     # current recording was starred or unstarred
 
     _CLOCK_MS = 250
+    VOLUME_STEPS = 16
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._volume = 40
         self._muted = False
+        self._volumeSteps = self.VOLUME_STEPS
         self._shuffle = False
         self._repeat = RepeatMode.Off
 
@@ -128,6 +139,14 @@ class PlayerBackend(QObject, ABC, metaclass=_BackendMeta):
     def retryAttempt(self) -> int:
         """How many reconnects have been attempted since the last success."""
         return 0
+
+    def outputs(self) -> list[Output]:
+        """Available audio outputs; empty when the backend has none."""
+        return []
+
+    def selectOutput(self, outputId: int) -> bool:
+        """Enable one output and disable the others."""
+        return False
 
     # ------------------------------------------------------------------ #
     # Transport
@@ -181,21 +200,28 @@ class PlayerBackend(QObject, ABC, metaclass=_BackendMeta):
     def volume(self) -> int:
         return self._volume
 
-    def volumeStep(self) -> int:
-        """Default volume increment for one knob notch."""
-        return 4
-
     def volumeMaximum(self) -> int:
         """Maximum value returned by volume() for this backend."""
         return 100
 
+    def volumeSteps(self) -> int:
+        """Number of notches across the full volume scale (16 or 64)."""
+        return self._volumeSteps
+
     def volumeDisplayLevel(self) -> int:
-        """Return a common 0..99 value for volume indicators."""
+        """Return a common 0..100 value for volume indicators."""
         maximum = max(1, self.volumeMaximum())
-        return max(0, min(99, (self.volume() * 99 + maximum // 2) // maximum))
+        return max(0, min(100, (self.volume() * 100 + maximum // 2) // maximum))
+
+    def _snapVolume(self, level: int) -> int:
+        """Snap a volume to the nearest configured step."""
+        maximum = max(1, self.volumeMaximum())
+        steps = self._volumeSteps
+        index = int(max(0, min(maximum, int(level))) * steps / maximum + 0.5)
+        return int(maximum * index / steps + 0.5)
 
     def setVolume(self, level: int) -> None:
-        level = max(0, min(100, int(level)))
+        level = self._snapVolume(level)
         if level == self._volume and not self._muted:
             return
         self._volume = level
@@ -204,7 +230,14 @@ class PlayerBackend(QObject, ABC, metaclass=_BackendMeta):
         self.volumeChanged.emit(self._volume, self._muted)
 
     def adjustVolume(self, delta: int) -> None:
-        self.setVolume(self._volume + delta)
+        """Move whole volume steps, snapping off-grid levels first."""
+        if delta == 0:
+            return
+        maximum = max(1, self.volumeMaximum())
+        steps = self._volumeSteps
+        index = int(self._volume * steps / maximum + 0.5)
+        index = max(0, min(steps, index + delta))
+        self.setVolume(int(maximum * index / steps + 0.5))
 
     def isMuted(self) -> bool:
         return self._muted

@@ -15,6 +15,8 @@ simulation).
 - Now Playing with optional blurred-cover background, Up Next queue, playlist
   and album browsing.
 - Connection-loss overlay with retry count and ICMP host ping.
+- Audio output selection in Settings (context menu of MPD outputs).
+- Configurable 16- or 64-step volume grid (`volume_steps` in the config file).
 
 See [`AGENT.md`](AGENT.md) for the full architecture and behaviour notes.
 
@@ -48,6 +50,7 @@ The config is created automatically at `%APPDATA%/headunit/config.json`
 ```json
 {
   "debug": true,
+  "volume_steps": 16,
   "mpd": {
     "host": "127.0.0.1",
     "port": 6600,
@@ -56,6 +59,9 @@ The config is created automatically at `%APPDATA%/headunit/config.json`
   }
 }
 ```
+
+`volume_steps` selects the volume grid: `16` for 6.25% per notch or `64` for
+1.5625%; invalid values fall back to 16.
 
 `timeout` is the control socket timeout in milliseconds. Bulk library loads and
 artwork use longer timeouts internally.

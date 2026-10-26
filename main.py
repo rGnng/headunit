@@ -21,26 +21,29 @@ _log = debuglog.getLogger("main")
 
 def createBackend(config: AppConfig | None = None) -> PlayerBackend:
     """Create the MPD backend; the mock backend is only used with --mock."""
+    config = config or AppConfig()
+    steps = config.volumeSteps()
     if "--mock" in sys.argv:
-        _log.info("using mock backend (--mock)")
-        return MockPlayerBackend()
+        _log.info("using mock backend (--mock, %d volume steps)", steps)
+        return MockPlayerBackend(volumeSteps=steps)
 
     from players.mpd import MpdPlayerBackend
 
-    config = config or AppConfig()
     mpd_cfg = config.mpd()
     timeout = config.mpdTimeout()
     _log.info(
-        "starting MPD backend at %s:%s (timeout %.0f ms)",
+        "starting MPD backend at %s:%s (timeout %.0f ms, %d volume steps)",
         mpd_cfg.get("host", "127.0.0.1"),
         mpd_cfg.get("port", 6600),
         timeout * 1000,
+        steps,
     )
     return MpdPlayerBackend(
         host=mpd_cfg.get("host", "127.0.0.1"),
         port=int(mpd_cfg.get("port", 6600)),
         password=mpd_cfg.get("password", ""),
         timeout=timeout,
+        volumeSteps=steps,
     )
 
 
