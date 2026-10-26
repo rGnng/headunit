@@ -81,6 +81,11 @@ def _icmpPingMs(host: str) -> float | None:
     return value
 
 
+def _isCommandError(exc: BaseException) -> bool:
+    """True for an MPD ACK: the command failed but the socket is healthy."""
+    return isinstance(exc, MpdError) and str(exc).startswith("ACK ")
+
+
 class MpdPlayerBackend(PlayerBackend):
     """Playback backend speaking the Music Player Daemon protocol."""
 
@@ -133,6 +138,16 @@ class MpdPlayerBackend(PlayerBackend):
         self._pingStop.set()
         self._pingThread: threading.Thread | None = None
 
+        # Reconnect probes run on a background thread: connecting to a dead
+        # host can block for the whole socket timeout, which must never happen
+        # on the GUI thread while the connection overlay is showing.
+        self._reconnectStop = threading.Event()
+        self._reconnectStop.set()
+        self._reconnectThread: threading.Thread | None = None
+        self._reconnectReady = False
+        self._retryAttempts = 0
+        self._lossEmitted = False
+
         self._trackCache: dict[str, Track] = {}
         # Library snapshot: the whole collection is fetched once and reused
         # until it is explicitly invalidated.
@@ -153,7 +168,6 @@ class MpdPlayerBackend(PlayerBackend):
         self._coverExecutor: ThreadPoolExecutor | None = ThreadPoolExecutor(
             max_workers=_COVER_WORKERS, thread_name_prefix="mpd-cover"
         )
-        self._albumDirs: dict[tuple[str, str], str] = {}
         self._albumFirstUri: dict[tuple[str, str], str] = {}
 
         self._poll = QTimer(self)
@@ -172,9 +186,6 @@ class MpdPlayerBackend(PlayerBackend):
 
     def currentTrack(self) -> Track | None:
         return self._track
-
-    def position(self) -> int:
-        return self._position
 
     def duration(self) -> int:
         return self._duration
@@ -291,12 +302,6 @@ class MpdPlayerBackend(PlayerBackend):
             and (t.album_artist or t.artist) == album.artist
         ]
         return sorted(tracks, key=lambda t: (t.disc_number, t.track_number))
-
-    def tracksByArtist(self, artist: str) -> list[Track]:
-        return [t for t in self._allTracks() if t.artist == artist]
-
-    def tracksByGenre(self, genre: str) -> list[Track]:
-        return [t for t in self._allTracks() if t.genre == genre]
 
     def playTrack(self, track: Track) -> None:
         self._batchCommands(
@@ -416,19 +421,6 @@ class MpdPlayerBackend(PlayerBackend):
             self._afterPlaylistEdit()
         return ok
 
-    def addAlbumToPlaylist(self, name: str, album: Album) -> bool:
-        tracks = self.tracksByAlbum(album)
-        if not name or not tracks:
-            return False
-        commands = [
-            f'playlistadd {self._quote(name)} {self._quote(self._uri(track))}'
-            for track in tracks
-        ]
-        ok = self._batchCommands(commands)
-        if ok:
-            self._afterPlaylistEdit()
-        return ok
-
     def removeTrackFromPlaylist(self, name: str, index: int) -> bool:
         if not name or index < 0:
             return False
@@ -481,22 +473,6 @@ class MpdPlayerBackend(PlayerBackend):
         if not name or name == STARRED_PLAYLIST:
             return False
         ok = self._playlistCommand(f'rm {self._quote(name)}')
-        if ok:
-            self._afterPlaylistEdit()
-        return ok
-
-    def renamePlaylist(self, name: str, newName: str) -> bool:
-        newName = newName.strip()
-        if (
-            not name
-            or not newName
-            or name == STARRED_PLAYLIST
-            or newName == STARRED_PLAYLIST
-        ):
-            return False
-        ok = self._playlistCommand(
-            f'rename {self._quote(name)} {self._quote(newName)}'
-        )
         if ok:
             self._afterPlaylistEdit()
         return ok
@@ -738,11 +714,21 @@ class MpdPlayerBackend(PlayerBackend):
         _log.info("cover cache cleared")
         self.coverChanged.emit()
 
+    def coverCacheSize(self) -> int:
+        """Bytes used by the artwork cache on disk for this server."""
+        total = 0
+        try:
+            for path in self._coverCacheRoot().rglob("*"):
+                if path.is_file():
+                    total += path.stat().st_size
+        except OSError:
+            return total
+        return total
+
     def reload(self) -> None:
         """Drop in-memory caches without restarting the application."""
         self._invalidateLibrary()
         self._trackCache.clear()
-        self._albumDirs.clear()
         self._albumFirstUri.clear()
         self._starredUris = None
         with self._coverLock:
@@ -906,22 +892,31 @@ class MpdPlayerBackend(PlayerBackend):
     # ------------------------------------------------------------------ #
     def _send(self, command: str) -> None:
         _log.debug("transport command: %s", command)
+        if not self._connected:
+            self._beginReconnect()
+            _log.debug("transport command skipped while offline: %s", command)
+            return
         try:
             self._client.command(command)
         except (MpdError, OSError) as exc:
             _log.warning("transport command %r failed: %s", command, exc)
-            self.connectionLost.emit()
+            if not _isCommandError(exc):
+                self._markDisconnected()
             return
         self._tick()
 
     def _values(self, command: str, tag: str) -> list[str] | None:
         """Return the sorted tag values, or None when the query failed."""
         prefix = f"{tag}:"
+        if not self._connected:
+            self._beginReconnect()
+            return None
         try:
             rows = self._client.commandList([command])
         except (MpdError, OSError) as exc:
             _log.warning("%s failed: %s", command, exc)
-            self.connectionLost.emit()
+            if not _isCommandError(exc):
+                self._markDisconnected()
             return None
         return sorted(
             row.split(":", 1)[1].strip()
@@ -930,11 +925,15 @@ class MpdPlayerBackend(PlayerBackend):
         )
 
     def _commandList(self, commands: list[str]) -> list[str]:
+        if not self._connected:
+            self._beginReconnect()
+            return []
         try:
             return self._client.commandList(commands)
         except (MpdError, OSError) as exc:
             _log.warning("command list %r failed: %s", commands[:3], exc)
-            self.connectionLost.emit()
+            if not _isCommandError(exc):
+                self._markDisconnected()
             return []
 
     def _allTracks(self) -> list[Track]:
@@ -947,6 +946,9 @@ class MpdPlayerBackend(PlayerBackend):
         """
         if self._library is not None:
             return self._library
+        if not self._connected:
+            self._beginReconnect()
+            return []
         started = time.monotonic()
         _log.debug("loading library snapshot (from %s)", _caller())
         previousTimeout = self._client.timeout
@@ -959,7 +961,8 @@ class MpdPlayerBackend(PlayerBackend):
                 (time.monotonic() - started) * 1000,
                 exc,
             )
-            self.connectionLost.emit()
+            if not _isCommandError(exc):
+                self._markDisconnected()
             return []
         finally:
             self._client.setTimeout(previousTimeout)
@@ -1037,7 +1040,6 @@ class MpdPlayerBackend(PlayerBackend):
         )
         self._trackCache[uri] = track
         albumKey = (track.album_artist or track.artist, track.album)
-        self._albumDirs[albumKey] = uri.rsplit("/", 1)[0] if "/" in uri else ""
         self._albumFirstUri.setdefault(albumKey, uri)
         return track
 
@@ -1072,7 +1074,7 @@ class MpdPlayerBackend(PlayerBackend):
 
     def retryAttempt(self) -> int:
         """Connection attempts made since the last successful connect."""
-        return int(getattr(self._client, "attempts", 0))
+        return self._retryAttempts
 
     def _startHostPing(self) -> None:
         if self._pingThread is not None and self._pingThread.is_alive():
@@ -1090,6 +1092,57 @@ class MpdPlayerBackend(PlayerBackend):
         self._pingThread = None
         self._hostPingMs = None
         self._hostPingState = "unknown"
+
+    def _beginReconnect(self) -> None:
+        """Probe the server in the background and flag when it is reachable."""
+        if self._reconnectThread is not None and self._reconnectThread.is_alive():
+            return
+        self._reconnectStop.clear()
+        self._reconnectThread = threading.Thread(
+            target=self._reconnectLoop, name="mpd-reconnect", daemon=True
+        )
+        self._reconnectThread.start()
+
+    def _reconnectLoop(self) -> None:
+        client = MpdClient(self._host, self._port, timeout=self._timeout)
+        delay = max(0.5, min(2.0, self._timeout))
+        try:
+            while not self._reconnectStop.is_set():
+                self._retryAttempts += 1
+                try:
+                    client.connect()
+                except (MpdError, OSError) as exc:
+                    _log.debug(
+                        "reconnect attempt %d failed: %s",
+                        self._retryAttempts,
+                        exc,
+                    )
+                    if self._reconnectStop.wait(delay):
+                        return
+                    delay = min(10.0, delay * 2)
+                    continue
+                client.close()
+                if not self._reconnectStop.is_set():
+                    self._reconnectReady = True
+                return
+        finally:
+            client.close()
+
+    def _stopReconnect(self) -> None:
+        self._reconnectStop.set()
+        self._reconnectThread = None
+        self._reconnectReady = False
+
+    def _markDisconnected(self) -> None:
+        """Enter offline mode: stop using the socket and probe in background."""
+        self._connected = False
+        self._latencyMs = None
+        self._reconnectReady = False
+        self._startHostPing()
+        self._beginReconnect()
+        if not self._lossEmitted:
+            self._lossEmitted = True
+            self.connectionLost.emit()
 
     def _pingLoop(self) -> None:
         while not self._pingStop.is_set():
@@ -1111,7 +1164,10 @@ class MpdPlayerBackend(PlayerBackend):
         self._stopping = True
         self._connected = False
         self._latencyMs = None
+        self._lossEmitted = False
+        self._retryAttempts = 0
         self._stopHostPing()
+        self._stopReconnect()
         _log.info("MPD backend closing")
         with self._coverLock:
             self._coverGeneration += 1
@@ -1131,6 +1187,9 @@ class MpdPlayerBackend(PlayerBackend):
         except Exception:  # noqa: BLE001
             pass
         self._stopping = False
+        self._lossEmitted = False
+        self._retryAttempts = 0
+        self._reconnectReady = False
         self._coverExecutor = ThreadPoolExecutor(
             max_workers=_COVER_WORKERS, thread_name_prefix="mpd-cover"
         )
@@ -1152,7 +1211,6 @@ class MpdPlayerBackend(PlayerBackend):
             self._coverCache.clear()
             self._coverPending.clear()
             self._coverMissing.clear()
-        self._albumDirs.clear()
         self._albumFirstUri.clear()
         if self._poll is None:
             self._poll = QTimer(self)
@@ -1189,19 +1247,36 @@ class MpdPlayerBackend(PlayerBackend):
     def _tick(self) -> None:
         if self._stopping:
             return
+        if not self._connected:
+            if not self._reconnectReady:
+                self._beginReconnect()
+                if not self._lossEmitted:
+                    self._lossEmitted = True
+                    self._startHostPing()
+                    self.connectionLost.emit()
+                return
+            # A background probe found the server; reconnect on this thread
+            # (the greeting is a fast exchange once the port is reachable).
+            self._reconnectReady = False
+            try:
+                self._client.connect()
+                if self._password:
+                    self._client.password(self._password)
+            except (MpdError, OSError) as exc:
+                _log.warning("reconnect failed: %s", exc)
+                self._beginReconnect()
+                return
         started = time.monotonic()
         try:
             status = self._client.command("status")
         except (MpdError, OSError) as exc:
-            self._connected = False
-            self._latencyMs = None
-            self._startHostPing()
             _log.warning(
                 "status poll failed after %.0f ms: %s",
                 (time.monotonic() - started) * 1000,
                 exc,
             )
-            self.connectionLost.emit()
+            if not _isCommandError(exc):
+                self._markDisconnected()
             return
         elapsedMs = (time.monotonic() - started) * 1000
         reconnected = not self._connected
@@ -1210,6 +1285,9 @@ class MpdPlayerBackend(PlayerBackend):
         self._ticks += 1
         if reconnected:
             self._stopHostPing()
+            self._stopReconnect()
+            self._lossEmitted = False
+            self._retryAttempts = 0
             _log.info("MPD connection restored")
         if elapsedMs >= _SLOW_POLL_MS:
             _log.warning("slow status poll: %.0f ms", elapsedMs)
@@ -1263,6 +1341,9 @@ class MpdPlayerBackend(PlayerBackend):
         if optionsChanged:
             self.playbackOptionsChanged.emit()
         if reconnected:
+            # A browser opened while offline built an empty root; let the
+            # visible page rebuild from the now reachable library.
+            self.libraryChanged.emit()
             self.connectionRestored.emit()
 
     def _currentSong(self) -> Track | None:

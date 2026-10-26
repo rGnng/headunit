@@ -64,11 +64,6 @@ class AppState(QObject):
         self.load()
 
     # -- file -------------------------------------------------------------- #
-    @property
-    def path(self) -> Path:
-        """Location of the state file."""
-        return self._path
-
     def load(self) -> None:
         """Read the state file; a missing or broken file starts fresh."""
         try:

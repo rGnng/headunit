@@ -165,9 +165,6 @@ class MockPlayerBackend(PlayerBackend):
             return self._queue[self._index]
         return None
 
-    def position(self) -> int:
-        return self._position
-
     def duration(self) -> int:
         track = self.currentTrack()
         return track.duration if track else 0
@@ -382,20 +379,6 @@ class MockPlayerBackend(PlayerBackend):
         self.playlistsChanged.emit()
         return True
 
-    def renamePlaylist(self, name: str, newName: str) -> bool:
-        newName = newName.strip()
-        if (
-            name == STARRED_PLAYLIST
-            or newName == STARRED_PLAYLIST
-            or name not in self._playlists
-            or not newName
-            or newName in self._playlists
-        ):
-            return False
-        self._playlists[newName] = self._playlists.pop(name)
-        self.playlistsChanged.emit()
-        return True
-
     # ------------------------------------------------------------------ #
     # Library queries
     # ------------------------------------------------------------------ #
@@ -419,12 +402,6 @@ class MockPlayerBackend(PlayerBackend):
 
     def tracksByAlbum(self, album: Album) -> list[Track]:
         return list(self._tracksByAlbum.get((album.artist, album.title), []))
-
-    def tracksByArtist(self, artist: str) -> list[Track]:
-        return [t for t in self.songs() if t.artist == artist]
-
-    def tracksByGenre(self, genre: str) -> list[Track]:
-        return [t for t in self.songs() if t.genre == genre]
 
     # ------------------------------------------------------------------ #
     # Simulation internals

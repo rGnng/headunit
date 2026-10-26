@@ -187,7 +187,18 @@ class MpdClient:
             self._ensureConnected()
             self._send(command)
             lines = self._readResponse()
-        except (OSError, MpdError) as exc:
+        except MpdError as exc:
+            # ACK is a command-level rejection; the socket is still usable.
+            if not str(exc).startswith("ACK "):
+                self.close()
+            _log.warning(
+                "command failed after %.0f ms: %s -> %s",
+                (time.monotonic() - started) * 1000,
+                _preview(command),
+                exc,
+            )
+            raise
+        except OSError as exc:
             self.close()
             _log.warning(
                 "command failed after %.0f ms: %s -> %s",
@@ -211,7 +222,17 @@ class MpdClient:
             self._ensureConnected()
             self._send(command)
             lines, binary = self._readResponseWithBinary()
-        except (OSError, MpdError) as exc:
+        except MpdError as exc:
+            if not str(exc).startswith("ACK "):
+                self.close()
+            _log.warning(
+                "binary command failed after %.0f ms: %s -> %s",
+                (time.monotonic() - started) * 1000,
+                _preview(command),
+                exc,
+            )
+            raise
+        except OSError as exc:
             self.close()
             _log.warning(
                 "binary command failed after %.0f ms: %s -> %s",

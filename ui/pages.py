@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
@@ -20,6 +20,37 @@ from players.base import (
 from ui.state import AppState
 from ui.theme import Palette, makeFont
 from ui.widgets import CoverArt, FocusList, OptionMenu, ProgressBar, elide
+
+
+def _formatBytes(count: int) -> str:
+    """Format a byte count for compact display, e.g. ``12.4 MB``."""
+    value = float(max(0, count))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+
+class _CacheSizeScan(QRunnable):
+    """Measure the artwork cache without blocking the GUI thread.
+
+    The result is written to a plain dict polled by the page, so no Qt object
+    is touched from the worker thread.
+    """
+
+    def __init__(self, counter: Callable[[], int], result: dict[str, int]) -> None:
+        super().__init__()
+        self._counter = counter
+        self._result = result
+
+    def run(self) -> None:
+        try:
+            size = self._counter()
+        except Exception:  # noqa: BLE001 - a failed scan must not crash the pool
+            size = 0
+        self._result["size"] = size
+
 
 
 @dataclass
@@ -1088,8 +1119,6 @@ class QueuePage(Page):
         # Visible row under the knob, saved across queue refreshes.
         self._cursor: int | None = None
         self._suppressQueueSelection = False
-        self._queueEditError = ""
-        self._queueLoadError = ""
 
         # Restore the row the knob was on in a previous session.
         if state is not None:
@@ -1114,10 +1143,6 @@ class QueuePage(Page):
         backend.playStateChanged.connect(lambda _: self._refresh())
         backend.libraryChanged.connect(self._refresh)
         backend.playbackOptionsChanged.connect(self._onPlaybackOptionsChanged)
-        if hasattr(backend, "queueEditFinished"):
-            backend.queueEditFinished.connect(self._onQueueEditFinished)
-        if hasattr(backend, "queueLoadFinished"):
-            backend.queueLoadFinished.connect(self._onQueueLoadFinished)
         self._refresh()
 
     # -- Page interface --------------------------------------------------- #
@@ -1125,8 +1150,6 @@ class QueuePage(Page):
         return "Queue"
 
     def onActivated(self) -> None:
-        if hasattr(self.backend, "refreshQueue"):
-            self.backend.refreshQueue()
         self._refresh()
 
     def _onPlaybackOptionsChanged(self) -> None:
@@ -1144,7 +1167,6 @@ class QueuePage(Page):
         index = self._list.selected()
         if not 0 <= index < len(self._queueIndices):
             return
-        self._queueEditError = ""
         self.backend.queuePlayNext(self._queueIndices[index])
         self._cursor = index
         self._refresh()
@@ -1153,7 +1175,6 @@ class QueuePage(Page):
         index = self._list.selected()
         if not 0 <= index < len(self._queueIndices):
             return
-        self._queueEditError = ""
         self.backend.queueRemove(self._queueIndices[index])
         queueLength = len(self._queueIndices) - 1
         self._cursor = min(index, queueLength - 1) if queueLength else None
@@ -1183,7 +1204,6 @@ class QueuePage(Page):
 
         def pick(index: int) -> None:
             if index == 0:
-                self._queueEditError = ""
                 self._cursor = None
                 self.backend.queueClear()
             elif index <= len(labels):
@@ -1220,14 +1240,6 @@ class QueuePage(Page):
             self.jumpRequested.emit("album", f"{artist}\x1f{track.album}")
         elif index == 1:
             self.jumpRequested.emit("artist", album.artist if album is not None else track.artist)
-
-    def _onQueueEditFinished(self, error: str) -> None:
-        self._queueEditError = error
-        self._refresh()
-
-    def _onQueueLoadFinished(self, error: str) -> None:
-        self._queueLoadError = error
-        self._refresh()
 
     def _onSelectionChanged(self, index: int) -> None:
         if not self._suppressQueueSelection:
@@ -1273,14 +1285,9 @@ class QueuePage(Page):
                 self._list.setSelectedRow(target)
         finally:
             self._suppressQueueSelection = False
-        if self._queueEditError:
-            self._listHeader.setText(f"Queue edit failed: {self._queueEditError}")
-        elif self._queueLoadError:
-            self._listHeader.setText(f"Queue load failed: {self._queueLoadError}")
-        else:
-            self._listHeader.setText(
-                f"Up Next ({len(upcoming)} in queue)" if upcoming else "Up Next"
-            )
+        self._listHeader.setText(
+            f"Up Next ({len(upcoming)} in queue)" if upcoming else "Up Next"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -1465,7 +1472,9 @@ class SettingsPage(Page):
     """Application settings plus live MPD server information."""
 
     SERVER_ROW = 5
+    CACHE_ROW = 3
     REFRESH_MS = 300
+    CACHE_REFRESH_MS = 2000
 
     def __init__(
         self,
@@ -1497,6 +1506,21 @@ class SettingsPage(Page):
         self._serverTimer.timeout.connect(self._refreshServerRow)
         self._serverTimer.start()
 
+        # The cache row reports the on-disk size while caching progresses. The
+        # measurement runs off the GUI thread and is polled here, so a large
+        # cache never stalls the interface.
+        self._cacheSizeLabel = "..."
+        self._cacheScans: list[tuple[_CacheSizeScan, dict[str, int], int]] = []
+        self._cacheToken = 0
+        self._cacheTimer = QTimer(self)
+        self._cacheTimer.setInterval(self.CACHE_REFRESH_MS)
+        self._cacheTimer.timeout.connect(self._requestCacheSize)
+        self._cacheTimer.start()
+        self._cachePoll = QTimer(self)
+        self._cachePoll.setInterval(200)
+        self._cachePoll.timeout.connect(self._collectCacheSize)
+        self._cachePoll.start()
+
         self._refreshItems()
 
     # -- Page interface --------------------------------------------------- #
@@ -1505,6 +1529,7 @@ class SettingsPage(Page):
 
     def onActivated(self) -> None:
         self._refreshItems(keepSelection=True)
+        self._requestCacheSize()
         self._refreshServerRow()
         self._list.setFocus()
 
@@ -1543,6 +1568,32 @@ class SettingsPage(Page):
             return
         self._list.setItemText(self.SERVER_ROW, secondary=self._serverText())
 
+    def _requestCacheSize(self) -> None:
+        """Start an off-thread size scan; the result updates the row."""
+        if not self.isVisible() or self._cacheScans:
+            return
+        self._cacheToken += 1
+        result: dict[str, int] = {}
+        scan = _CacheSizeScan(self.backend.coverCacheSize, result)
+        self._cacheScans.append((scan, result, self._cacheToken))
+        QThreadPool.globalInstance().start(scan)
+
+    def _collectCacheSize(self) -> None:
+        """Apply a finished scan, dropping results from before a rebuild."""
+        for entry in list(self._cacheScans):
+            scan, result, token = entry
+            size = result.get("size")
+            if size is None:
+                continue
+            self._cacheScans.remove(entry)
+            if token != self._cacheToken:
+                continue
+            self._cacheSizeLabel = _formatBytes(size)
+            if self.isVisible():
+                self._list.setItemText(
+                    self.CACHE_ROW, secondary=self._cacheSizeLabel
+                )
+
     # -- settings model ---------------------------------------------------- #
     def _backgroundMode(self) -> str:
         mode = (
@@ -1566,7 +1617,7 @@ class SettingsPage(Page):
             ("Shuffle", shuffle),
             ("Repeat", repeat),
             ("Background", self._backgroundLabel()),
-            ("Recache Covers", "Start"),
+            ("Rebuild Cache", self._cacheSizeLabel),
             ("Reload", "Memory"),
             ("MPD Server", self._serverText()),
         ]
@@ -1591,10 +1642,14 @@ class SettingsPage(Page):
             window = self.window()
             if window is not None and hasattr(window, "setBackgroundMode"):
                 window.setBackgroundMode(mode)
-        elif label == "Recache Covers":
+        elif label == "Rebuild Cache":
             window = self.window()
             if window is not None and hasattr(window, "startRecaching"):
                 window.startRecaching()
+            # The cache is empty now; ignore any scan started before the clear.
+            self._cacheToken += 1
+            self._cacheSizeLabel = "0 B"
+            self._requestCacheSize()
         elif label == "Reload":
             window = self.window()
             if window is not None and hasattr(window, "reloadCaches"):

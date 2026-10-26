@@ -58,8 +58,8 @@ track timestamp.
 One `listallinfo` call builds `_library`; albums, artists and genres are derived
 and cached. Browsing never re-fetches the library per row. The snapshot uses a
 separate **20 s** timeout (even though the control socket timeout is 1 s).
-`refreshLibrary()`, a backend reconnect or the Settings `Reload` action drops
-the snapshot; it is rebuilt on demand.
+The Settings `Reload` action or an explicit backend reconnect drops the
+snapshot; it is rebuilt on demand.
 
 ### Playback and queue
 - Play and queue changes are sent as **single command lists** (one round trip,
@@ -102,11 +102,15 @@ server restart stay consistent.
 - Control socket timeout comes from `mpd.timeout` (default 1000 ms). A failed
   command closes the socket; reconnects back off 1 s → 2 s → 4 s → 8 s → 10 s
   and continue until success.
+- While offline, reconnects are probed on a background thread: a dead host can
+  make `connect()` block for the full socket timeout, which would freeze the
+  GUI if attempted on the status-poll thread.
 - While offline, a background thread pings the host with the system `ping`
   command every second. The overlay shows the attempt count and the ICMP ping;
   no reply shows `timeout`.
 - `connectionRestored` makes the window hide the overlay and refresh the status
-  bar, Now Playing/artwork, the visible queue and the background.
+  bar, Now Playing/artwork, the visible queue and the background. The backend
+  also emits `libraryChanged`, so a browser opened while offline fills in.
 - MPD keeps a current song while stopped (e.g. after a server restart), so the
   client still shows its title, artist, cover and duration with a stop icon.
 
@@ -157,11 +161,12 @@ Shows cover, title, artist - album and progress. Cover retries as described
 above; no star indicator is shown here (the status bar has it).
 
 ### Settings
-Rows: `Shuffle`, `Repeat`, `Background`, `Recache Covers`, `Reload`,
+Rows: `Shuffle`, `Repeat`, `Background`, `Rebuild Cache`, `Reload`,
 `MPD Server`. The server row has two lines, `address · state` and the current
 ping, refreshed every 300 ms while visible; selecting it reconnects.
-`Recache Covers` deletes artwork caches (memory and disk) and starts a caching
-pass immediately. `Reload` drops the in-memory library/artwork caches and
+`Rebuild Cache` deletes artwork caches (memory and disk) and starts a caching
+pass immediately; its value shows the current on-disk cache size, refreshed
+every 2 s while visible. `Reload` drops the in-memory library/artwork caches and
 rebuilds the visible views without restarting.
 
 ### Idle cover caching
@@ -173,9 +178,16 @@ starts a fresh pass. A cover that keeps timing out is skipped after 10 s so the
 rest of the pass can proceed.
 
 ### Overlays
-- Volume: bottom centre above the status bar.
-- Connection lost: centred box with a grey `plug` icon, retry attempt and ping.
-- Caching: top-right disc/progress gadget.
+
+All status gadgets share one layout: a dim icon and bold title on the left, a
+dim value on the right and, where applicable, a rounded progress bar below.
+- Volume: bottom centre above the status bar. Shows `Volume` / `nn%`, the
+  volume-up icon, and a bar; muted replaces icon/value with the red mute icon
+  and `Muted`.
+- Connection lost: compact centred gadget. Shows the red plug icon,
+  `Disconnected` and `Retry n · Ping …`; no progress bar.
+- Caching: top-right disc gadget. Shows `Caching`, `processed/total` and a
+  progress bar.
 
 ## Configuration and State
 Config file (`%APPDATA%/headunit/config.json` on Windows, otherwise
@@ -217,6 +229,9 @@ python main.py --mock    # In-memory sample library
 python main.py --smoke   # Automated key-routing smoke test
 python main.py --debug   # Mirror the debug log to stderr
 ```
+
+Mock mode is only enabled by `--mock`; an unreachable MPD server does not fall
+back to the mock backend.
 
 ## Dependencies
 See `requirements.txt`: PySide6 at runtime; fonttools/brotli only for icon

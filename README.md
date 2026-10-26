@@ -10,8 +10,8 @@ simulation).
   state, the `Stared` playlist, multi-disc albums).
 - Fast browsing of large libraries: one library snapshot, cached text layouts,
   partial list repaints and pre-scaled cover thumbnails.
-- Asynchronous cover caching with an idle "Caching" mode, `Recache Covers` and
-  `Reload` actions in Settings.
+- Asynchronous cover caching with an idle "Caching" mode, `Rebuild Cache` and
+  `Reload` actions in Settings (the cache size is shown next to the action).
 - Now Playing with optional blurred-cover background, Up Next queue, playlist
   and album browsing.
 - Connection-loss overlay with retry count and ICMP host ping.
@@ -35,6 +35,10 @@ python main.py --mock    # In-memory sample library (no server)
 python main.py --smoke   # Automated key-routing smoke test
 python main.py --debug   # Mirror the debug log to stderr
 ```
+
+Mock mode is only enabled by `--mock`. If the MPD server is unreachable the
+MPD backend stays active and the connection overlay is shown; there is no
+automatic fallback to the mock library.
 
 ## Configuration
 

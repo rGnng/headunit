@@ -604,22 +604,111 @@ class ProgressBar(QWidget):
             painter.drawRoundedRect(QRect(0, 0, width, self.height()), 5, 5)
 
 
-class VolumeOverlay(QWidget):
-    """Transient volume/mute indicator shown above the footer."""
+class GadgetOverlay(QWidget):
+    """Shared look for the small status gadgets.
 
-    WIDTH = 380
-    HEIGHT = 64
+    Every gadget uses the same layout: an icon and bold title on the left, a
+    dim value on the right and, when meaningful, a progress bar underneath.
+    """
+
+    WIDTH = 300
+    HEIGHT = 84
+    PADDING = 14
+    ICON = 26
+    BAR_HEIGHT = 8
+    RADIUS = 10
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedSize(self.WIDTH, self.HEIGHT)
+        self.hide()
+
+    def _paintFrame(self, painter: QPainter) -> None:
+        painter.setBrush(Palette.PanelAlt)
+        painter.setPen(QPen(Palette.Border, 1))
+        painter.drawRoundedRect(
+            self.rect().adjusted(1, 1, -1, -1), self.RADIUS, self.RADIUS
+        )
+
+    def _paintHeader(
+        self,
+        painter: QPainter,
+        iconName: str,
+        title: str,
+        value: str,
+        *,
+        hasBar: bool,
+        iconColor: QColor = Palette.TextDim,
+        valueColor: QColor = Palette.TextDim,
+        valueWidth: int = 80,
+    ) -> None:
+        top = 15 if hasBar else (self.HEIGHT - self.ICON) // 2
+        icons.draw(
+            painter,
+            iconName,
+            QRect(self.PADDING, top, self.ICON, self.ICON),
+            iconColor,
+            size=self.ICON,
+        )
+
+        titleFont = makeFont(16, bold=True)
+        titleX = self.PADDING + self.ICON + 10
+        titleWidth = self.WIDTH - titleX - self.PADDING - valueWidth - 8
+        painter.setFont(titleFont)
+        painter.setPen(Palette.Text)
+        painter.drawText(
+            QRect(titleX, top - 1, titleWidth, self.ICON + 2),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            elide(title, titleFont, titleWidth),
+        )
+
+        painter.setFont(makeFont(14))
+        painter.setPen(valueColor)
+        painter.drawText(
+            QRect(
+                self.WIDTH - self.PADDING - valueWidth,
+                top,
+                valueWidth,
+                self.ICON,
+            ),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+            value,
+        )
+
+    def _paintBar(
+        self, painter: QPainter, fraction: float, color: QColor = Palette.Accent
+    ) -> None:
+        bar = QRect(
+            self.PADDING,
+            self.HEIGHT - 26,
+            self.WIDTH - 2 * self.PADDING,
+            self.BAR_HEIGHT,
+        )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(Palette.Background)
+        painter.drawRoundedRect(bar, 4, 4)
+        width = int(bar.width() * max(0.0, min(1.0, fraction)))
+        if width > 0:
+            painter.setBrush(color)
+            painter.drawRoundedRect(
+                QRect(bar.left(), bar.top(), width, bar.height()), 4, 4
+            )
+
+
+class VolumeOverlay(GadgetOverlay):
+    """Transient volume/mute indicator shown above the footer."""
+
+    WIDTH = 380
+    HEIGHT = 84
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
         self._level = 0
         self._muted = False
         self._hideTimer = QTimer(self)
         self._hideTimer.setSingleShot(True)
         self._hideTimer.setInterval(1800)
         self._hideTimer.timeout.connect(self.hide)
-        self.hide()
 
     def present(self, level: int, muted: bool) -> None:
         self._level = max(0, min(99, level))
@@ -632,53 +721,34 @@ class VolumeOverlay(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(Palette.PanelAlt)
-        painter.setPen(QPen(Palette.Border, 1))
-        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 10, 10)
-
-        labelFont = makeFont(16)
-        valueFont = makeFont(18, bold=True)
-        margin = 16
-
-        painter.setFont(labelFont)
-        painter.setPen(Palette.TextDim)
-        painter.drawText(
-            QRect(margin, 10, 100, 20),
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+        muted = self._muted
+        self._paintFrame(painter)
+        self._paintHeader(
+            painter,
+            "volume-mute" if muted else "volume-up",
             "Volume",
+            "Muted" if muted else f"{self._level}%",
+            hasBar=True,
+            iconColor=Palette.Danger if muted else Palette.TextDim,
+            valueColor=Palette.Danger if muted else Palette.TextDim,
+        )
+        self._paintBar(
+            painter,
+            0.0 if muted else self._level / 99,
+            Palette.Danger if muted else Palette.Accent,
         )
 
-        painter.setFont(valueFont)
-        painter.setPen(Palette.Danger if self._muted else Palette.Text)
-        value = f"{0 if self._muted else self._level:02d}"
-        painter.drawText(
-            QRect(self.WIDTH - margin - 80, 10, 80, 20),
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
-            value,
-        )
 
-        barRect = QRect(margin, 40, self.WIDTH - 2 * margin, 10)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(Palette.Background)
-        painter.drawRoundedRect(barRect, 5, 5)
-        fillWidth = int(barRect.width() * (0 if self._muted else self._level) / 99)
-        if fillWidth > 0:
-            painter.setBrush(Palette.Danger if self._muted else Palette.Accent)
-            painter.drawRoundedRect(QRect(barRect.left(), barRect.top(), fillWidth, barRect.height()), 5, 5)
+class ConnectionOverlay(GadgetOverlay):
+    """Centered gadget shown while the MPD connection is down."""
 
-
-class ConnectionOverlay(QWidget):
-    """Centered box shown while the MPD connection is down."""
-
-    WIDTH = 300
-    HEIGHT = 176
+    WIDTH = 340
+    HEIGHT = 64
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedSize(self.WIDTH, self.HEIGHT)
         self._attempt = 1
         self._ping = "Ping -- ms"
-        self.hide()
 
     def present(self, attempt: int, ping: str) -> None:
         self._attempt = max(1, int(attempt))
@@ -690,37 +760,19 @@ class ConnectionOverlay(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(Palette.PanelAlt)
-        painter.setPen(QPen(Palette.Border, 1))
-        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 12, 12)
-
-        iconSize = 48
-        icons.draw(
+        self._paintFrame(painter)
+        self._paintHeader(
             painter,
             "plug",
-            QRect((self.width() - iconSize) // 2, 24, iconSize, iconSize),
-            Palette.TextDim,
-            size=iconSize,
-        )
-
-        painter.setFont(makeFont(18, bold=True))
-        painter.setPen(Palette.Text)
-        painter.drawText(
-            QRect(0, 84, self.width(), 26),
-            Qt.AlignmentFlag.AlignCenter,
-            f"Retry attempt #{self._attempt}",
-        )
-
-        painter.setFont(makeFont(15))
-        painter.setPen(Palette.TextDim)
-        painter.drawText(
-            QRect(0, 116, self.width(), 22),
-            Qt.AlignmentFlag.AlignCenter,
-            self._ping,
+            "Disconnected",
+            f"Retry {self._attempt} \u00b7 {self._ping}",
+            hasBar=False,
+            iconColor=Palette.Danger,
+            valueWidth=150,
         )
 
 
-class CachingOverlay(QWidget):
+class CachingOverlay(GadgetOverlay):
     """Top-right progress gadget shown while idle cover caching runs."""
 
     WIDTH = 250
@@ -728,10 +780,8 @@ class CachingOverlay(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedSize(self.WIDTH, self.HEIGHT)
         self._current = 0
         self._total = 0
-        self.hide()
 
     def present(self, current: int, total: int) -> None:
         self._current = max(0, int(current))
@@ -743,46 +793,19 @@ class CachingOverlay(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(Palette.PanelAlt)
-        painter.setPen(QPen(Palette.Border, 1))
-        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 10, 10)
-
-        iconSize = 26
-        icons.draw(
+        self._paintFrame(painter)
+        self._paintHeader(
             painter,
             "disc",
-            QRect(14, 15, iconSize, iconSize),
-            Palette.TextDim,
-            size=iconSize,
-        )
-
-        painter.setFont(makeFont(16, bold=True))
-        painter.setPen(Palette.Text)
-        painter.drawText(
-            QRect(50, 12, 110, 28),
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
             "Caching",
-        )
-
-        painter.setFont(makeFont(14, monospace=True))
-        painter.setPen(Palette.TextDim)
-        painter.drawText(
-            QRect(self.WIDTH - 104, 14, 90, 24),
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
             f"{self._current}/{self._total}",
+            hasBar=True,
         )
-
-        bar = QRect(14, 58, self.WIDTH - 28, 8)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(Palette.Background)
-        painter.drawRoundedRect(bar, 4, 4)
-        if self._total > 0:
-            width = int(bar.width() * self._current / self._total)
-            if width > 0:
-                painter.setBrush(Palette.Accent)
-                painter.drawRoundedRect(
-                    QRect(bar.left(), bar.top(), width, bar.height()), 4, 4
-                )
+        self._paintBar(
+            painter,
+            self._current / self._total if self._total else 0.0,
+            Palette.Accent,
+        )
 
 
 class StatusBar(QWidget):

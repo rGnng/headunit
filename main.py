@@ -20,32 +20,28 @@ _log = debuglog.getLogger("main")
 
 
 def createBackend(config: AppConfig | None = None) -> PlayerBackend:
-    """Create the MPD backend, or the mock backend for --mock/smoke runs."""
+    """Create the MPD backend; the mock backend is only used with --mock."""
     if "--mock" in sys.argv:
         _log.info("using mock backend (--mock)")
         return MockPlayerBackend()
-    config = config or AppConfig()
-    try:
-        from players.mpd import MpdPlayerBackend
 
-        mpd_cfg = config.mpd()
-        timeout = config.mpdTimeout()
-        _log.info(
-            "starting MPD backend at %s:%s (timeout %.0f ms)",
-            mpd_cfg.get("host", "127.0.0.1"),
-            mpd_cfg.get("port", 6600),
-            timeout * 1000,
-        )
-        return MpdPlayerBackend(
-            host=mpd_cfg.get("host", "127.0.0.1"),
-            port=int(mpd_cfg.get("port", 6600)),
-            password=mpd_cfg.get("password", ""),
-            timeout=timeout,
-        )
-    except (OSError, Exception) as exc:  # noqa: BLE001 - fall back on any failure
-        _log.warning("MPD unavailable, using mock backend: %s", exc)
-        print(f"MPD unavailable ({exc}); using mock backend", file=sys.stderr)
-        return MockPlayerBackend()
+    from players.mpd import MpdPlayerBackend
+
+    config = config or AppConfig()
+    mpd_cfg = config.mpd()
+    timeout = config.mpdTimeout()
+    _log.info(
+        "starting MPD backend at %s:%s (timeout %.0f ms)",
+        mpd_cfg.get("host", "127.0.0.1"),
+        mpd_cfg.get("port", 6600),
+        timeout * 1000,
+    )
+    return MpdPlayerBackend(
+        host=mpd_cfg.get("host", "127.0.0.1"),
+        port=int(mpd_cfg.get("port", 6600)),
+        password=mpd_cfg.get("password", ""),
+        timeout=timeout,
+    )
 
 
 def sendKey(window: MainWindow, key: Qt.Key) -> None:
@@ -109,6 +105,7 @@ def main() -> int:
     try:
         return app.exec()
     finally:
+        state.flush()
         _log.info("event loop finished")
         debuglog.beat()
 

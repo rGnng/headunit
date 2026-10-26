@@ -139,9 +139,6 @@ class PlayerBackend(QObject, ABC, metaclass=_BackendMeta):
     def currentTrack(self) -> Track | None: ...
 
     @abstractmethod
-    def position(self) -> int: ...
-
-    @abstractmethod
     def duration(self) -> int: ...
 
     @abstractmethod
@@ -266,12 +263,6 @@ class PlayerBackend(QObject, ABC, metaclass=_BackendMeta):
     @abstractmethod
     def tracksByAlbum(self, album: Album) -> list[Track]: ...
 
-    @abstractmethod
-    def tracksByArtist(self, artist: str) -> list[Track]: ...
-
-    @abstractmethod
-    def tracksByGenre(self, genre: str) -> list[Track]: ...
-
     def albumForTrack(self, track: Track) -> Album | None:
         """Resolve a playing track to the album identity used by the library."""
         for album in self.albums():
@@ -341,13 +332,6 @@ class PlayerBackend(QObject, ABC, metaclass=_BackendMeta):
     def addTrackToPlaylist(self, name: str, track: Track) -> bool:
         return False
 
-    def addAlbumToPlaylist(self, name: str, album: Album) -> bool:
-        tracks = self.tracksByAlbum(album)
-        added = False
-        for track in tracks:
-            added = self.addTrackToPlaylist(name, track) or added
-        return added
-
     def removeTrackFromPlaylist(self, name: str, index: int) -> bool:
         return False
 
@@ -363,9 +347,6 @@ class PlayerBackend(QObject, ABC, metaclass=_BackendMeta):
         return False
 
     def deletePlaylist(self, name: str) -> bool:
-        return False
-
-    def renamePlaylist(self, name: str, newName: str) -> bool:
         return False
 
     def isStarred(self, track: Track) -> bool:
@@ -416,6 +397,10 @@ class PlayerBackend(QObject, ABC, metaclass=_BackendMeta):
 
     def clearCoverCache(self) -> None:
         """Drop cached artwork (memory and disk); backends may override."""
+
+    def coverCacheSize(self) -> int:
+        """Bytes used by the on-disk artwork cache; 0 when unknown."""
+        return 0
 
     def reload(self) -> None:
         """Drop in-memory caches without restarting the program."""
