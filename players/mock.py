@@ -8,7 +8,16 @@ from __future__ import annotations
 
 import random
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QBuffer, QIODevice, QRect, QTimer, Qt
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QImage,
+    QLinearGradient,
+    QPainter,
+    QPen,
+)
 
 from .base import STARRED_PLAYLIST, Album, Output, PlayerBackend, RepeatMode, Track
 
@@ -114,6 +123,7 @@ class MockPlayerBackend(PlayerBackend):
         self._playing = False
         self._position = 0
         self._outputId = 0
+        self._covers: dict[str, tuple[bytes, bytes]] = {}
         self._playlists: dict[str, list[Track]] = {STARRED_PLAYLIST: []}
 
         self._clock = QTimer(self)
@@ -169,6 +179,99 @@ class MockPlayerBackend(PlayerBackend):
         if outputId not in (0, 1):
             return False
         self._outputId = outputId
+        return True
+
+    # ------------------------------------------------------------------ #
+    # Artwork
+    # ------------------------------------------------------------------ #
+    def _coverArt(self, albumTitle: str) -> tuple[bytes, bytes]:
+        """Generate (full, thumbnail) PNG artwork for a mock album."""
+        cached = self._covers.get(albumTitle)
+        if cached is not None:
+            return cached
+
+        size = 600
+        hue = sum(ord(character) for character in albumTitle) % 360
+        image = QImage(size, size, QImage.Format.Format_RGB32)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        gradient = QLinearGradient(0, 0, 0, size)
+        gradient.setColorAt(0.0, QColor.fromHsv(hue, 140, 82))
+        gradient.setColorAt(1.0, QColor.fromHsv((hue + 40) % 360, 165, 30))
+        painter.fillRect(image.rect(), gradient)
+
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor(255, 255, 255, 38), 2))
+        centre = size // 2
+        for radius in range(150, 40, -12):
+            painter.drawEllipse(
+                centre - radius, centre - radius, radius * 2, radius * 2
+            )
+
+        font = QFont("Segoe UI")
+        font.setPixelSize(42)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor(240, 240, 240))
+        metrics = QFontMetrics(font)
+        title = metrics.elidedText(
+            albumTitle, Qt.TextElideMode.ElideRight, size - 80
+        )
+        painter.drawText(
+            QRect(40, size - 130, size - 80, 80),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            title,
+        )
+        painter.end()
+
+        full = self._encodePng(image)
+
+        scaled = image.scaled(
+            72,
+            72,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        if scaled.width() > 72 or scaled.height() > 72:
+            scaled = scaled.copy(
+                (scaled.width() - 72) // 2,
+                (scaled.height() - 72) // 2,
+                72,
+                72,
+            )
+        thumb = self._encodePng(scaled)
+        self._covers[albumTitle] = (full, thumb)
+        return full, thumb
+
+    @staticmethod
+    def _encodePng(image: QImage) -> bytes:
+        buffer = QBuffer()
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        image.save(buffer, "PNG")
+        data = bytes(buffer.data())
+        buffer.close()
+        return data
+
+    def trackCover(self, track: Track) -> bytes | None:
+        return self._coverArt(track.album)[0]
+
+    def albumCover(self, album: Album) -> bytes | None:
+        return self._coverArt(album.title)[0]
+
+    def trackThumbnail(self, track: Track) -> bytes | None:
+        return self._coverArt(track.album)[1]
+
+    def albumThumbnail(self, album: Album) -> bytes | None:
+        return self._coverArt(album.title)[1]
+
+    def coverStatus(self, track: Track) -> str:
+        return "ready"
+
+    def albumCoverStatus(self, album: Album) -> str:
+        return "ready"
+
+    def albumCoverCached(self, album: Album) -> bool:
         return True
 
     def isPlaying(self) -> bool:

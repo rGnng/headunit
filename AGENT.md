@@ -26,7 +26,8 @@ mock backend is available for UI development without a server.
 - `mpdclient.py`: minimal synchronous MPD protocol client. Handles reconnects
   with backoff, command lists, binary artwork responses and connection-attempt
   counting.
-- `mock.py`: in-memory sample backend for UI testing.
+- `mock.py`: in-memory sample backend for UI testing, with generated album
+  artwork.
 
 ### UI (`ui/`)
 - `window.py`: main window, view routing, key mapping, status bar, background,

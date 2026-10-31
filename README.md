@@ -20,6 +20,16 @@ simulation).
 
 See [`AGENT.md`](AGENT.md) for the full architecture and behaviour notes.
 
+## Screenshots
+
+Captured with `python main.py --mock`:
+
+![Now Playing](docs/screenshots/now-playing.png)
+
+![Albums](docs/screenshots/albums.png)
+
+![Up Next](docs/screenshots/queue.png)
+
 ## Requirements
 
 - Python 3.10+
